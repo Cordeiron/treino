@@ -1,0 +1,6 @@
+{
+  "name": "REBECA RACING",
+  "description": "Experiência fitness exclusiva inspirada na Fórmula 1, criada especialmente para a jornada de força, evolução e performance da Rebeca.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

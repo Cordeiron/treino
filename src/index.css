@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --rr-black: #080b0e;
+    --rr-graphite: #151a20;
+    --rr-steel: #707982;
+    --rr-silver: #c5cbd0;
+    --rr-white: #ffffff;
+    --rr-turquoise: #00d2be;
+  }
+
+  html {
+    background-color: #080b0e;
+    color: #ffffff;
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #080b0e;
+    color: #ffffff;
+    overflow-x: hidden;
+  }
+
+  *:focus-visible {
+    outline: 2px solid #00d2be;
+    outline-offset: 2px;
+  }
+}
+
+.font-display {
+  font-family: "Chakra Petch", sans-serif;
+}
+
+.font-mono-telemetry {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(197, 203, 208, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(197, 203, 208, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.carbon-surface {
+  background: linear-gradient(145deg, #171d24 0%, #101419 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
