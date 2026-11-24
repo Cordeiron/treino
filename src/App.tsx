@@ -80,22 +80,31 @@ export default function App() {
 
   const hydrateForUser = useCallback(
     async (user: AuthUser, moveAfterLoad: boolean) => {
-      const loaded = await loadUserAppData(user.id);
+      let loaded = EMPTY_DATA;
+      try {
+        loaded = await loadUserAppData(user.id);
+      } catch {
+        loaded = EMPTY_DATA;
+      }
+
       setAuthUser(user);
       setUserData(loaded);
       setSelectedGoal(loaded.profile?.goal ?? null);
 
       const daily = getDailyNauhanMessage(todayStr);
-      void syncDailyMessageLog(user.id, todayStr, daily.index, daily.text);
+      void syncDailyMessageLog(user.id, todayStr, daily.index, daily.text).catch(() => {});
 
       if (moveAfterLoad) {
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         if (loaded.profile) {
           setStage(AppStage.DASHBOARD);
           setActiveSection(NavSection.INICIO);
         } else {
           setStage(AppStage.GOAL_SELECTION);
         }
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        window.scrollTo({ top: 0, behavior: 'auto' });
       }
     },
     [todayStr]
@@ -115,10 +124,18 @@ export default function App() {
     })();
 
     const supabase = getSupabaseClient();
-    const subscription = supabase?.auth.onAuthStateChange((_event, session) => {
-      if (!session?.user) {
+    const subscription = supabase?.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
         setAuthUser(null);
         setUserData(EMPTY_DATA);
+      } else if (event === 'SIGNED_IN' && session?.user) {
+        setAuthUser((prev) =>
+          prev ?? {
+            id: session.user.id,
+            email: session.user.email ?? '',
+            name: (session.user.user_metadata?.name as string | undefined) ?? undefined,
+          }
+        );
       }
     });
 
