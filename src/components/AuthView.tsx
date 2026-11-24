@@ -50,15 +50,19 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
     setInfoMsg(null);
   };
 
-  const runAuthAction = async () => {
+  const runAuthAction = async (overrides?: {
+    email?: string;
+    password?: string;
+    name?: string;
+  }) => {
     if (submittingRef.current || loading) return;
 
     setErrorMsg(null);
     setInfoMsg(null);
 
-    const rawEmail = emailInputRef.current?.value ?? email;
-    const rawPassword = passwordInputRef.current?.value ?? password;
-    const rawName = nameInputRef.current?.value ?? name;
+    const rawEmail = overrides?.email ?? emailInputRef.current?.value ?? email;
+    const rawPassword = overrides?.password ?? passwordInputRef.current?.value ?? password;
+    const rawName = overrides?.name ?? nameInputRef.current?.value ?? name;
 
     if (rawEmail !== email) setEmail(rawEmail);
     if (rawPassword !== password) setPassword(rawPassword);
@@ -81,7 +85,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
         return;
       }
       if (mode === 'signup' && rawPassword.length < 6) {
-        setErrorMsg('A senha precisa ter pelo menos 6 caracteres.');
+        setErrorMsg('A senha precisa ter entre 6 e 8 caracteres.');
         return;
       }
     }
@@ -120,6 +124,14 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
     } finally {
       submittingRef.current = false;
       setLoading(false);
+    }
+  };
+
+  const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextVal = e.target.value.slice(0, 8);
+    setPassword(nextVal);
+    if (mode === 'login' && nextVal.length === 8) {
+      void runAuthAction({ password: nextVal });
     }
   };
 
@@ -248,7 +260,9 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
             {mode !== 'reset' && (
               <div>
                 <label htmlFor="auth-pass" className="block text-xs text-[#C5CBD0] mb-1.5">
-                  Senha
+                  {mode === 'login'
+                    ? 'Senha (até 8 dígitos — entra direto no 8º)'
+                    : 'Senha (6 a 8 caracteres)'}
                 </label>
                 <div className="relative">
                   <Lock
@@ -260,14 +274,19 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
                     id="auth-pass"
                     name="password"
                     type={showPassword ? 'text' : 'password'}
+                    maxLength={8}
                     autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
                     enterKeyHint="go"
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Mínimo 6 caracteres"
+                    onChange={handlePasswordChange}
+                    placeholder={
+                      mode === 'login'
+                        ? 'Até 8 dígitos (8º entra direto)'
+                        : 'Entre 6 e 8 caracteres'
+                    }
                     className="w-full pl-10 pr-12 py-3 rounded bg-[#080B0E] border border-[#707982]/40 text-white text-base sm:text-sm focus:border-[#00D2BE] focus:outline-none"
                   />
                   <button
