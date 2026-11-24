@@ -95,8 +95,12 @@ export default function App() {
       void syncDailyMessageLog(user.id, todayStr, daily.index, daily.text).catch(() => {});
 
       if (moveAfterLoad) {
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
+        try {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+        } catch {
+          // Ignora erro de blur em WebViews mobile
         }
         if (loaded.profile) {
           setStage(AppStage.DASHBOARD);
@@ -104,7 +108,11 @@ export default function App() {
         } else {
           setStage(AppStage.GOAL_SELECTION);
         }
-        window.scrollTo({ top: 0, behavior: 'auto' });
+        try {
+          window.scrollTo(0, 0);
+        } catch {
+          // Ignora erro de scrollTo
+        }
       }
     },
     [todayStr]
@@ -194,7 +202,10 @@ export default function App() {
     const initialCheckpoint: BodyCheckpoint | null = hasBaseline
       ? null
       : {
-          id: crypto.randomUUID ? crypto.randomUUID() : `cp-init-${Date.now()}`,
+          id:
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `cp-init-${Date.now()}`,
           date: todayStr,
           weightKg: profile.currentWeightKg,
           note: 'Largada oficial da temporada',

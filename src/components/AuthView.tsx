@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, Loader2, Lock, Mail, User } from 'lucide-react';
 import { isSupabaseConfigured } from '../lib/supabase';
 import {
@@ -26,31 +26,61 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
   const submittingRef = useRef(false);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  const feedbackRef = useRef<HTMLDivElement | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => {
+    if ((errorMsg || infoMsg) && feedbackRef.current) {
+      requestAnimationFrame(() => {
+        try {
+          feedbackRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch {
+          // Ignora em webviews antigas
+        }
+      });
+    }
+  }, [errorMsg, infoMsg]);
+
+  const switchMode = (nextMode: AuthMode) => {
+    if (submittingRef.current) return;
+    setMode(nextMode);
+    setErrorMsg(null);
+    setInfoMsg(null);
+  };
+
+  const runAuthAction = async () => {
     if (submittingRef.current || loading) return;
 
     setErrorMsg(null);
     setInfoMsg(null);
 
-    const trimmedEmail = email.trim().toLowerCase();
+    const rawEmail = emailInputRef.current?.value ?? email;
+    const rawPassword = passwordInputRef.current?.value ?? password;
+    const rawName = nameInputRef.current?.value ?? name;
+
+    if (rawEmail !== email) setEmail(rawEmail);
+    if (rawPassword !== password) setPassword(rawPassword);
+    if (rawName !== name) setName(rawName);
+
+    const trimmedEmail = rawEmail.trim().toLowerCase();
     if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       setErrorMsg('Informe um endereço de e-mail válido.');
       return;
     }
 
-    if (mode === 'signup' && !name.trim()) {
+    if (mode === 'signup' && !rawName.trim()) {
       setErrorMsg('Informe seu nome para criar a conta.');
       return;
     }
 
     if (mode !== 'reset') {
-      if (!password) {
+      if (!rawPassword) {
         setErrorMsg('Informe sua senha.');
         return;
       }
-      if (mode === 'signup' && password.length < 6) {
+      if (mode === 'signup' && rawPassword.length < 6) {
         setErrorMsg('A senha precisa ter pelo menos 6 caracteres.');
         return;
       }
@@ -61,20 +91,22 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
 
     try {
       if (mode === 'login') {
-        const res = await signInWithEmail(trimmedEmail, password);
+        const res = await signInWithEmail(trimmedEmail, rawPassword);
         if (res.error || !res.user) {
           setErrorMsg(res.error ?? 'Não foi possível entrar. Verifique seus dados.');
         } else {
           await onAuthenticated(res.user);
         }
       } else if (mode === 'signup') {
-        const res = await signUpWithEmail(trimmedEmail, password, name);
+        const res = await signUpWithEmail(trimmedEmail, rawPassword, rawName);
         if (res.error) {
           setErrorMsg(res.error);
         } else if (res.user) {
           await onAuthenticated(res.user);
         } else if (res.info) {
           setInfoMsg(res.info);
+        } else {
+          setErrorMsg('Não foi possível concluir o cadastro. Tente novamente.');
         }
       } else {
         const res = await requestPasswordReset(trimmedEmail);
@@ -91,20 +123,25 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
     }
   };
 
+  const handleFormSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    void runAuthAction();
+  };
+
   return (
-    <section className="min-h-screen min-h-dvh bg-[#080B0E] telemetry-grid-bg text-white flex flex-col justify-between px-4 sm:px-6 py-6 sm:py-8 overflow-y-auto">
+    <section className="min-h-screen bg-[#080B0E] telemetry-grid-bg text-white flex flex-col justify-start sm:justify-between px-4 sm:px-6 pt-5 pb-12 sm:py-8">
       <div className="w-full max-w-md mx-auto">
         <button
           type="button"
           onClick={onBackToGrid}
-          className="inline-flex items-center gap-2 py-1 text-sm text-[#C5CBD0] hover:text-white transition-colors cursor-pointer touch-manipulation"
+          className="inline-flex items-center gap-2 py-1.5 text-sm text-[#C5CBD0] hover:text-white transition-colors cursor-pointer touch-manipulation"
         >
           <ArrowLeft className="w-4 h-4 text-[#00D2BE]" />
           <span>Voltar ao Grid de Largada</span>
         </button>
       </div>
 
-      <div className="w-full max-w-md mx-auto my-6 sm:my-auto relative z-10">
+      <div className="w-full max-w-md mx-auto mt-5 sm:my-auto relative z-10">
         <div className="bg-[#151A20] border border-[#707982]/30 rounded-md p-6 sm:p-8 space-y-6">
           <div>
             <p className="font-mono-telemetry text-xs tracking-[0.2em] text-[#00D2BE] uppercase">
@@ -131,11 +168,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
             <button
               type="button"
               disabled={loading}
-              onClick={() => {
-                setMode('login');
-                setErrorMsg(null);
-                setInfoMsg(null);
-              }}
+              onClick={() => switchMode('login')}
               className={`py-2.5 rounded text-xs font-medium transition-colors cursor-pointer touch-manipulation ${
                 mode === 'login'
                   ? 'bg-[#00D2BE] text-[#080B0E] font-bold'
@@ -147,11 +180,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
             <button
               type="button"
               disabled={loading}
-              onClick={() => {
-                setMode('signup');
-                setErrorMsg(null);
-                setInfoMsg(null);
-              }}
+              onClick={() => switchMode('signup')}
               className={`py-2.5 rounded text-xs font-medium transition-colors cursor-pointer touch-manipulation ${
                 mode === 'signup'
                   ? 'bg-[#00D2BE] text-[#080B0E] font-bold'
@@ -162,25 +191,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
             </button>
           </div>
 
-          {errorMsg && (
-            <div
-              role="alert"
-              className="p-3.5 rounded bg-red-950/60 border border-red-500/60 text-xs sm:text-sm text-red-100 leading-relaxed"
-            >
-              {errorMsg}
-            </div>
-          )}
-
-          {infoMsg && (
-            <div
-              role="status"
-              className="p-3.5 rounded bg-[#080B0E] border border-[#00D2BE]/60 text-xs sm:text-sm text-[#00D2BE] leading-relaxed"
-            >
-              {infoMsg}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <form onSubmit={handleFormSubmit} noValidate className="space-y-4">
             {mode === 'signup' && (
               <div>
                 <label htmlFor="auth-name" className="block text-xs text-[#C5CBD0] mb-1.5">
@@ -192,6 +203,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
                     className="pointer-events-none w-4 h-4 text-[#707982] absolute left-3.5 top-1/2 -translate-y-1/2"
                   />
                   <input
+                    ref={nameInputRef}
                     id="auth-name"
                     name="name"
                     type="text"
@@ -215,6 +227,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
                   className="pointer-events-none w-4 h-4 text-[#707982] absolute left-3.5 top-1/2 -translate-y-1/2"
                 />
                 <input
+                  ref={emailInputRef}
                   id="auth-email"
                   name="email"
                   type="email"
@@ -243,6 +256,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
                     className="pointer-events-none w-4 h-4 text-[#707982] absolute left-3.5 top-1/2 -translate-y-1/2"
                   />
                   <input
+                    ref={passwordInputRef}
                     id="auth-pass"
                     name="password"
                     type={showPassword ? 'text' : 'password'}
@@ -268,10 +282,33 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
               </div>
             )}
 
+            {(errorMsg || infoMsg) && (
+              <div ref={feedbackRef}>
+                {errorMsg && (
+                  <div
+                    role="alert"
+                    className="p-3.5 rounded bg-red-950/75 border border-red-500/70 text-xs sm:text-sm text-red-100 leading-relaxed"
+                  >
+                    {errorMsg}
+                  </div>
+                )}
+
+                {infoMsg && (
+                  <div
+                    role="status"
+                    className="p-3.5 rounded bg-[#080B0E] border border-[#00D2BE]/60 text-xs sm:text-sm text-[#00D2BE] leading-relaxed"
+                  >
+                    {infoMsg}
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
-              type="submit"
+              type="button"
               disabled={loading}
-              className="w-full min-h-[48px] py-3.5 px-4 rounded bg-[#00D2BE] text-[#080B0E] font-display font-bold text-sm tracking-[0.1em] uppercase hover:bg-[#1de6d2] active:scale-[0.99] transition-all disabled:opacity-65 cursor-pointer touch-manipulation inline-flex items-center justify-center gap-2"
+              onClick={() => void runAuthAction()}
+              className="w-full min-h-[48px] py-3.5 px-4 rounded bg-[#00D2BE] text-[#080B0E] font-display font-bold text-sm tracking-[0.1em] uppercase hover:bg-[#1de6d2] active:opacity-90 transition-colors disabled:opacity-65 cursor-pointer touch-manipulation inline-flex items-center justify-center gap-2 select-none"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
               <span>
@@ -295,12 +332,8 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
               <button
                 type="button"
                 disabled={loading}
-                onClick={() => {
-                  setMode('reset');
-                  setErrorMsg(null);
-                  setInfoMsg(null);
-                }}
-                className="py-1 text-[#C5CBD0] hover:text-[#00D2BE] cursor-pointer touch-manipulation"
+                onClick={() => switchMode('reset')}
+                className="py-1.5 text-[#C5CBD0] hover:text-[#00D2BE] cursor-pointer touch-manipulation"
               >
                 Esqueci minha senha
               </button>
@@ -308,12 +341,8 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
               <button
                 type="button"
                 disabled={loading}
-                onClick={() => {
-                  setMode('login');
-                  setErrorMsg(null);
-                  setInfoMsg(null);
-                }}
-                className="py-1 text-[#C5CBD0] hover:text-[#00D2BE] cursor-pointer touch-manipulation"
+                onClick={() => switchMode('login')}
+                className="py-1.5 text-[#C5CBD0] hover:text-[#00D2BE] cursor-pointer touch-manipulation"
               >
                 Voltar ao login
               </button>
@@ -328,7 +357,7 @@ export function AuthView({ onAuthenticated, onBackToGrid }: AuthViewProps) {
         </div>
       </div>
 
-      <div className="w-full max-w-md mx-auto text-center text-xs text-[#707982] pb-2">
+      <div className="w-full max-w-md mx-auto text-center text-xs text-[#707982] pt-6 pb-2">
         REBECA RACING · THE PERFECT SHAPE. THE PERFECT RACE.
       </div>
     </section>

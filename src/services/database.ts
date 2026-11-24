@@ -39,10 +39,18 @@ const memoryFallbackMap = new Map<string, string>();
 
 function safeStorageGet(key: string): string | null {
   try {
-    return window.localStorage.getItem(key) ?? window.sessionStorage.getItem(key);
+    const ls = window.localStorage?.getItem(key);
+    if (ls !== null && ls !== undefined) return ls;
   } catch {
-    return memoryFallbackMap.get(key) ?? null;
+    // Ignora caso localStorage esteja bloqueado
   }
+  try {
+    const ss = window.sessionStorage?.getItem(key);
+    if (ss !== null && ss !== undefined) return ss;
+  } catch {
+    // Ignora caso sessionStorage esteja bloqueado
+  }
+  return memoryFallbackMap.get(key) ?? null;
 }
 
 function safeStorageSet(key: string, value: string): void {
@@ -165,19 +173,51 @@ function openIdb(): Promise<IDBDatabase> {
       reject(new Error('IndexedDB unavailable'));
       return;
     }
-    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_USERS)) {
-        const usersStore = db.createObjectStore(STORE_USERS, { keyPath: 'email' });
-        usersStore.createIndex('id', 'id', { unique: true });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('IndexedDB timeout'));
       }
-      if (!db.objectStoreNames.contains(STORE_DATA)) {
-        db.createObjectStore(STORE_DATA, { keyPath: 'userId' });
+    }, 600);
+
+    try {
+      const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_USERS)) {
+          const usersStore = db.createObjectStore(STORE_USERS, { keyPath: 'email' });
+          usersStore.createIndex('id', 'id', { unique: true });
+        }
+        if (!db.objectStoreNames.contains(STORE_DATA)) {
+          db.createObjectStore(STORE_DATA, { keyPath: 'userId' });
+        }
+      };
+      req.onsuccess = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(req.result);
+      };
+      req.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(req.error);
+      };
+      req.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('IndexedDB blocked'));
+      };
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
       }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    }
   });
 }
 
@@ -190,39 +230,44 @@ function toHex(bytes: ArrayBuffer | Uint8Array): string {
 
 async function hashPassword(
   password: string,
-  saltHex?: string
+  saltHex?: string,
+  forceJsFallback = false
 ): Promise<{ saltHex: string; hashHex: string }> {
   const actualSaltHex = saltHex ?? getRandomHex(16);
 
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    const saltBytes = new Uint8Array(
-      actualSaltHex.match(/.{1,2}/g)!.map((h) => parseInt(h, 16))
-    );
-    const enc = new TextEncoder();
-    const keyMat = await crypto.subtle.importKey(
-      'raw',
-      enc.encode(password),
-      'PBKDF2',
-      false,
-      ['deriveBits']
-    );
-    const derived = await crypto.subtle.deriveBits(
-      {
-        name: 'PBKDF2',
-        salt: saltBytes,
-        iterations: 100_000,
-        hash: 'SHA-256',
-      },
-      keyMat,
-      256
-    );
-    return {
-      saltHex: actualSaltHex,
-      hashHex: toHex(derived),
-    };
+  if (!forceJsFallback && typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const saltBytes = new Uint8Array(
+        actualSaltHex.match(/.{1,2}/g)!.map((h) => parseInt(h, 16))
+      );
+      const enc = new TextEncoder();
+      const keyMat = await crypto.subtle.importKey(
+        'raw',
+        enc.encode(password),
+        'PBKDF2',
+        false,
+        ['deriveBits']
+      );
+      const derived = await crypto.subtle.deriveBits(
+        {
+          name: 'PBKDF2',
+          salt: saltBytes,
+          iterations: 100_000,
+          hash: 'SHA-256',
+        },
+        keyMat,
+        256
+      );
+      return {
+        saltHex: actualSaltHex,
+        hashHex: toHex(derived),
+      };
+    } catch {
+      // Caso crypto.subtle falhe ou seja bloqueado no navegador mobile, usa fallback JS
+    }
   }
 
-  // Fallback seguro para contextos HTTP locais no celular (sem crypto.subtle)
+  // Fallback seguro para contextos HTTP locais ou webviews restritas no celular
   let acc = `${actualSaltHex}:${password}`;
   for (let i = 0; i < 64; i++) {
     acc = sha256HexFallback(`${acc}:${actualSaltHex}`);
@@ -251,19 +296,64 @@ function writeLocalStoreMap<T>(storageKey: string, map: Record<string, T>): void
   }
 }
 
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  timeoutMessage: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(timeoutMessage));
+      }
+    }, ms);
+    promise.then(
+      (val) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(val);
+        }
+      },
+      (err) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+      }
+    );
+  });
+}
+
 async function idbGet<T>(storeName: string, key: string): Promise<T | undefined> {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openIdb();
-    const res = await new Promise<T | undefined>((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
-      const store = tx.objectStore(storeName);
-      const req = store.get(key);
-      req.onsuccess = () => resolve(req.result as T | undefined);
-      req.onerror = () => reject(req.error);
-    });
+    db = await openIdb();
+    const res = await withTimeout(
+      new Promise<T | undefined>((resolve, reject) => {
+        const tx = db!.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        const req = store.get(key);
+        req.onsuccess = () => resolve(req.result as T | undefined);
+        req.onerror = () => reject(req.error);
+        tx.onerror = () => reject(tx.error ?? new Error('IDB tx error'));
+        tx.onabort = () => reject(tx.error ?? new Error('IDB tx aborted'));
+      }),
+      600,
+      'IDB get timeout'
+    );
     if (res !== undefined) return res;
   } catch {
     // Fallback para storage caso IndexedDB esteja bloqueado no mobile
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Ignora
+    }
   }
 
   const fallbackKey =
@@ -287,17 +377,30 @@ async function idbPut<T extends Record<string, unknown>>(
     writeLocalStoreMap(fallbackKey, map);
   }
 
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openIdb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
-      const store = tx.objectStore(storeName);
-      const req = store.put(value);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
+    db = await openIdb();
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        const tx = db!.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const req = store.put(value);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+        tx.onerror = () => reject(tx.error ?? new Error('IDB tx error'));
+        tx.onabort = () => reject(tx.error ?? new Error('IDB tx aborted'));
+      }),
+      600,
+      'IDB put timeout'
+    );
   } catch {
     // Já salvo no fallback map acima
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Ignora
+    }
   }
 }
 
@@ -325,7 +428,11 @@ export async function getCurrentSessionUser(): Promise<AuthUser | null> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase.auth.getSession();
+      const { data, error } = await withTimeout(
+        supabase.auth.getSession(),
+        6000,
+        'Session timeout'
+      );
       if (error || !data.session?.user) return null;
       const u = data.session.user;
       return {
@@ -365,11 +472,15 @@ export async function signUpWithEmail(
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: { data: { name: cleanName } },
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: { data: { name: cleanName } },
+        }),
+        12000,
+        'Tempo limite esgotado ao conectar com o servidor.'
+      );
       if (error) {
         return { user: null, error: translateSupabaseAuthError(error.message) };
       }
@@ -391,10 +502,13 @@ export async function signUpWithEmail(
         user: { id: data.user.id, email: data.user.email ?? cleanEmail, name: cleanName },
         error: null,
       };
-    } catch {
+    } catch (err) {
       return {
         user: null,
-        error: 'Erro de conexão ao criar conta. Verifique sua internet e tente novamente.',
+        error:
+          err instanceof Error && err.message.includes('Tempo limite')
+            ? err.message + ' Verifique sua internet e tente novamente.'
+            : 'Erro de conexão ao criar conta. Verifique sua internet e tente novamente.',
       };
     }
   }
@@ -437,10 +551,14 @@ export async function signInWithEmail(
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        }),
+        12000,
+        'Tempo limite esgotado ao conectar com o servidor.'
+      );
       if (error) {
         return { user: null, error: translateSupabaseAuthError(error.message) };
       }
@@ -455,10 +573,13 @@ export async function signInWithEmail(
         },
         error: null,
       };
-    } catch {
+    } catch (err) {
       return {
         user: null,
-        error: 'Erro de conexão ao tentar entrar. Verifique sua internet e tente novamente.',
+        error:
+          err instanceof Error && err.message.includes('Tempo limite')
+            ? err.message + ' Verifique sua internet e tente novamente.'
+            : 'Erro de conexão ao tentar entrar. Verifique sua internet e tente novamente.',
       };
     }
   }
@@ -468,11 +589,12 @@ export async function signInWithEmail(
     return {
       user: null,
       error:
-        'Conta não encontrada neste navegador. Se o Supabase ainda não estiver conectado, crie seu cadastro na aba "Criar Conta".',
+        'Conta não encontrada neste aparelho. Sem o Supabase conectado, cada dispositivo salva os dados localmente — toque em "Criar Conta" acima para acessar neste celular.',
     };
   }
 
-  const { hashHex } = await hashPassword(password, record.saltHex);
+  const forceJsFallback = record.passwordHashHex.startsWith('js_');
+  const { hashHex } = await hashPassword(password, record.saltHex, forceJsFallback);
   if (hashHex !== record.passwordHashHex) {
     return { user: null, error: 'E-mail ou senha incorretos. Tente novamente.' };
   }
@@ -493,9 +615,13 @@ export async function requestPasswordReset(
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: window.location.origin,
-      });
+      const { error } = await withTimeout(
+        supabase.auth.resetPasswordForEmail(cleanEmail, {
+          redirectTo: window.location.origin,
+        }),
+        12000,
+        'Tempo limite esgotado ao solicitar redefinição.'
+      );
       if (error) return { ok: false, message: translateSupabaseAuthError(error.message) };
       return {
         ok: true,
@@ -539,16 +665,20 @@ export async function loadUserAppData(userId: string): Promise<UserAppData> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const [profileRes, completionsRes, progressRes, checkinsRes] = await Promise.all([
-        supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
-        supabase.from('exercise_completions').select('*').eq('user_id', userId),
-        supabase
-          .from('progress_history')
-          .select('*')
-          .eq('user_id', userId)
-          .order('recorded_date', { ascending: false }),
-        supabase.from('daily_checkins').select('*').eq('user_id', userId),
-      ]);
+      const [profileRes, completionsRes, progressRes, checkinsRes] = await withTimeout(
+        Promise.all([
+          supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
+          supabase.from('exercise_completions').select('*').eq('user_id', userId),
+          supabase
+            .from('progress_history')
+            .select('*')
+            .eq('user_id', userId)
+            .order('recorded_date', { ascending: false }),
+          supabase.from('daily_checkins').select('*').eq('user_id', userId),
+        ]),
+        8000,
+        'Load user data timeout'
+      );
 
       let profile: DriverProfile | null = null;
       if (profileRes.data) {
@@ -664,80 +794,84 @@ export async function saveUserProfileAndPlan(
 
   const supabase = getSupabaseClient();
   if (supabase) {
-    await supabase.from('profiles').upsert(
-      {
-        user_id: userId,
-        name: profile.name,
-        age: profile.age,
-        height_cm: profile.heightCm,
-        current_weight_kg: profile.currentWeightKg,
-        target_weight_kg: profile.targetWeightKg ?? null,
-        goal: profile.goal,
-        experience: profile.experience,
-        days_per_week: profile.daysPerWeek,
-        session_minutes: profile.sessionMinutes,
-        focus_regions: profile.focusRegions,
-        disliked_exercises: profile.dislikedExercises,
-        injuries: profile.injuries,
-        physical_limitations: profile.physicalLimitations,
-        avoid_exercises: profile.avoidExercises,
-        professional_guidance: profile.professionalGuidance,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id' }
-    );
+    try {
+      await supabase.from('profiles').upsert(
+        {
+          user_id: userId,
+          name: profile.name,
+          age: profile.age,
+          height_cm: profile.heightCm,
+          current_weight_kg: profile.currentWeightKg,
+          target_weight_kg: profile.targetWeightKg ?? null,
+          goal: profile.goal,
+          experience: profile.experience,
+          days_per_week: profile.daysPerWeek,
+          session_minutes: profile.sessionMinutes,
+          focus_regions: profile.focusRegions,
+          disliked_exercises: profile.dislikedExercises,
+          injuries: profile.injuries,
+          physical_limitations: profile.physicalLimitations,
+          avoid_exercises: profile.avoidExercises,
+          professional_guidance: profile.professionalGuidance,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
 
-    await supabase
-      .from('workout_plans')
-      .update({ status: 'archived' })
-      .eq('user_id', userId)
-      .eq('status', 'active');
+      await supabase
+        .from('workout_plans')
+        .update({ status: 'archived' })
+        .eq('user_id', userId)
+        .eq('status', 'active');
 
-    const { data: planRow } = await supabase
-      .from('workout_plans')
-      .insert({ user_id: userId, goal: profile.goal, status: 'active' })
-      .select('id')
-      .single();
+      const { data: planRow } = await supabase
+        .from('workout_plans')
+        .insert({ user_id: userId, goal: profile.goal, status: 'active' })
+        .select('id')
+        .single();
 
-    if (planRow?.id) {
-      for (const day of schedule) {
-        const { data: dayRow } = await supabase
-          .from('workout_days')
-          .insert({
-            plan_id: planRow.id,
-            user_id: userId,
-            day_index: day.dayIndex,
-            day_name: day.dayName,
-            session_code: day.sessionCode,
-            title: day.title,
-            muscle_groups: day.muscleGroups,
-            is_rest_day: day.isRestDay,
-            warmup_note: day.warmupNote,
-          })
-          .select('id')
-          .single();
-
-        if (dayRow?.id && day.exercises.length > 0) {
-          await supabase.from('exercises').insert(
-            day.exercises.map((ex) => ({
-              workout_day_id: dayRow.id,
+      if (planRow?.id) {
+        for (const day of schedule) {
+          const { data: dayRow } = await supabase
+            .from('workout_days')
+            .insert({
+              plan_id: planRow.id,
               user_id: userId,
-              order_index: ex.orderIndex,
-              illustration_key: ex.illustrationKey,
-              name: ex.name,
-              main_muscle: ex.mainMuscle,
-              secondary_muscles: ex.secondaryMuscles,
-              equipment: ex.equipment,
-              difficulty: ex.difficulty,
-              sets: ex.sets,
-              reps: ex.reps,
-              rest_seconds: ex.restSeconds,
-              instructions: ex.instructions,
-              common_mistakes: ex.commonMistakes,
-            }))
-          );
+              day_index: day.dayIndex,
+              day_name: day.dayName,
+              session_code: day.sessionCode,
+              title: day.title,
+              muscle_groups: day.muscleGroups,
+              is_rest_day: day.isRestDay,
+              warmup_note: day.warmupNote,
+            })
+            .select('id')
+            .single();
+
+          if (dayRow?.id && day.exercises.length > 0) {
+            await supabase.from('exercises').insert(
+              day.exercises.map((ex) => ({
+                workout_day_id: dayRow.id,
+                user_id: userId,
+                order_index: ex.orderIndex,
+                illustration_key: ex.illustrationKey,
+                name: ex.name,
+                main_muscle: ex.mainMuscle,
+                secondary_muscles: ex.secondaryMuscles,
+                equipment: ex.equipment,
+                difficulty: ex.difficulty,
+                sets: ex.sets,
+                reps: ex.reps,
+                rest_seconds: ex.restSeconds,
+                instructions: ex.instructions,
+                common_mistakes: ex.commonMistakes,
+              }))
+            );
+          }
         }
       }
+    } catch {
+      // Continua sem bloquear a experiência caso o schema ainda não tenha sido aplicado
     }
     return nextData;
   }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, ChevronRight } from 'lucide-react';
 import { CameraPreset, LiveryMode, TireCompound } from '../types/racing';
 import { F1Canvas } from './F1Canvas';
@@ -17,6 +17,14 @@ export function StartingGrid({
 }: StartingGridProps) {
   const [launching, setLaunching] = useState(false);
   const [lightsLit, setLightsLit] = useState<number>(0);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current = [];
+    };
+  }, []);
 
   const sceneConfig = useMemo(
     () => ({
@@ -59,12 +67,14 @@ export function StartingGrid({
         onStartJourney();
       }, 2050)
     );
+
+    timersRef.current = timers;
   };
 
   return (
-    <section className="relative w-full min-h-screen overflow-hidden bg-[#080B0E] flex flex-col justify-between">
+    <section className="relative w-full min-h-screen overflow-x-hidden bg-[#080B0E] flex flex-col justify-between">
       {/* Full-bleed 3D Starting Grid Scene */}
-      <div className="absolute inset-0 z-0">
+      <div className="pointer-events-none sm:pointer-events-auto absolute inset-0 z-0">
         <F1Canvas config={sceneConfig} />
       </div>
 
@@ -144,7 +154,7 @@ export function StartingGrid({
               type="button"
               onClick={handleStartClick}
               disabled={launching}
-              className="inline-flex items-center justify-center gap-3 px-7 py-4 rounded bg-[#00D2BE] text-[#080B0E] font-display font-bold text-sm sm:text-base tracking-[0.12em] uppercase transition-transform duration-150 hover:bg-[#1de6d2] active:scale-[0.98] disabled:opacity-80 cursor-pointer whitespace-nowrap shrink-0"
+              className="inline-flex items-center justify-center gap-3 px-7 py-4 rounded bg-[#00D2BE] text-[#080B0E] font-display font-bold text-sm sm:text-base tracking-[0.12em] uppercase transition-colors duration-150 hover:bg-[#1de6d2] active:opacity-90 disabled:opacity-80 cursor-pointer touch-manipulation whitespace-nowrap shrink-0"
             >
               <span>
                 {lightsLit === -1
@@ -160,7 +170,7 @@ export function StartingGrid({
               <button
                 type="button"
                 onClick={onResumeDashboard}
-                className="inline-flex items-center gap-2 px-5 py-4 rounded bg-[#151A20]/95 border border-[#707982]/40 text-[#C5CBD0] hover:text-white hover:border-[#00D2BE] font-medium text-sm transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-2 px-5 py-4 rounded bg-[#151A20]/95 border border-[#707982]/40 text-[#C5CBD0] hover:text-white hover:border-[#00D2BE] font-medium text-sm transition-colors cursor-pointer touch-manipulation whitespace-nowrap shrink-0"
               >
                 <span>Abrir meu painel atual</span>
                 <ChevronRight className="w-4 h-4 text-[#00D2BE]" />
